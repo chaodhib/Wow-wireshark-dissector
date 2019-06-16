@@ -61,7 +61,10 @@ Clone the Wireshark project from their official git repository into one empty fo
 
 ## Screenshots
 
-TODO
+![screeenshot wireshark dissector](https://user-images.githubusercontent.com/6612710/59569546-6e7c3b00-908b-11e9-92d0-4038ec53ff5e.png)
+
+Here is what the preferences menu should look like:
+![screeenshot wireshark dissector 2](https://user-images.githubusercontent.com/6612710/59569550-776d0c80-908b-11e9-8815-db929f755557.png)
 
 ## Known limitations
 
