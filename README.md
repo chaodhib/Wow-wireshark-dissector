@@ -35,7 +35,7 @@ key b, the key that will initialize the RC4 internal state that:
 
 Even though the server and the client will both have both keys, by convention in this project, we will call key a "the server key" (because the server uses it encrypt) and key b "the client key" (because the client uses it to encrypt).
 
-Now the question is: How do we get these 2 keys? Without going much into the details, the 2 RC4 keys are the result of the key exchange mechanism that WoW uses (SPR6) when the client authenticate itself with the server. In order to obtain these 2 keys, I wrote a LUA script (located in the folder "cheat engine script") that runs on Cheat Engine. This script hooks into the client and print into a file the 2 session keys. These 2 session keys can then be given to Wireshark to enable the decryption of the WoW packets. 
+Now the question is: How do we get these 2 keys? Without going much into the details, the 2 RC4 keys are the result of the key exchange mechanism that WoW uses (SPR6) when the client authenticate itself with the server. In order to obtain these 2 keys, I wrote a LUA script (located in the folder "cheat engine script") that runs on [Cheat Engine](https://github.com/cheat-engine/cheat-engine). This script hooks into the client and print into a file the 2 session keys. These 2 session keys can then be given to Wireshark to enable the decryption of the WoW packets. 
 
 The location to the file has to be specified by changing the value of the variable "session\_keys\_file" in the LUA script!
 
@@ -51,7 +51,7 @@ Once we have this, then copy paste each key to Wireshark preferences (Edit → P
 * What should be copied for the "server encryption key" is exactly "0x8a 0x98 0x6f 0xf3 0xde 0xd8 0x87 0x2e 0x58 0x1e 0x9a 0x98 0x7e 0xd6 0x44 0x17 0x80 0x4e 0xd7 0xc0".
 * What should be copied for the "client encryption key" is exactly "0xb4 0x7d 0x9e 0x3 0xa4 0xb7 0x98 0x92 0xb2 0x3c 0xfb 0x31 0x5f 0xbc 0x7e 0x37 0x9 0x81 0xbc 0x14".
 
-Once last thing: In order to display the name of each opcode, the path to the file "Opcodes.h" from the TrinityCore project should be provided in the "Preferences" menu. 
+Once last thing: In order to display the name of each opcode, the path to the file "Opcodes.h" from the [TrinityCore project](https://github.com/TrinityCore/TrinityCore) (branch 3.3.5) should be provided in the "Preferences" menu. 
 
 Once this is done, Wireshark should be able to decrypt the communications between the client and the server. 
 
@@ -61,6 +61,7 @@ Clone the Wireshark project from their official git repository into one empty fo
 
 ## Screenshots
 
+Here is the dissector in action (with the IP addresses blurred):
 ![screeenshot wireshark dissector](https://user-images.githubusercontent.com/6612710/59569546-6e7c3b00-908b-11e9-92d0-4038ec53ff5e.png)
 
 Here is what the preferences menu should look like:
