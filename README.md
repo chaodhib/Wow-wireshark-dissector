@@ -21,7 +21,7 @@ Linux is also supported but you need to compile the dissector from source and ge
 
 ## How to use
 
-WoW uses an symmetric encryption cypher called RC4 to encrypt and decrypt the header (size and opcode) of each packet. RC4 is a stream cypher that gets initialized by a secret key. In order for the dissector to work, we need to provide it with two keys:
+WoW uses an symmetric encryption cypher called RC4 to encrypt and decrypt the header (size and opcode) of each packet. RC4 is a stream cypher that gets initialized by a secret key (also called session key because the key will only be used during one session). In order for the dissector to work, we need to provide it with two keys:
 
 key a, the key that will initialize the RC4 internal state that:
 
