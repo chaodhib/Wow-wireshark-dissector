@@ -1,6 +1,6 @@
 # World of Warcraft Wireshark dissector
 
-This project is a World of Warcraft Wireshark dissector for the version 3.3.5a (build 12340) of the game. The protocol name displayed in Wireshark is "WOWW" for "World of Warcraft **World**". This name has been chosen to avoid a naming conflict with another dissector in Wireshark named WOW, which dissects the communication between a client and a World Of Warcraft **Authentication** server. WOWW however dissects the communication between a client and a World of Warcraft **World** server.
+This project is a World of Warcraft [Wireshark](https://www.wireshark.org/) dissector for the version 3.3.5a (build 12340) of the game. The protocol name displayed in Wireshark is "WOWW" for "World of Warcraft **World**". This name has been chosen to avoid a naming conflict with another dissector in Wireshark named WOW, which dissects the communication between a client and a World Of Warcraft **Authentication** server. WOWW however dissects the communication between a client and a World of Warcraft **World** server.
 
 ## How to install
 
@@ -12,7 +12,7 @@ Download the woww.dll DLL file from the release tab. Then copy the DDL file to e
 * the personal plugin folder: %APPDATA%\Wireshark\plugins\3.0\epan.
 * the global plugin folder: WIRESHARK\plugins\3.0\epan. 
 
-where #APPDATA# and WIRESHARK are defined here: https://www.wireshark.org/docs/wsug_html_chunked/ChConfigurationPluginFolders.html
+where %APPDATA% and WIRESHARK are defined here: https://www.wireshark.org/docs/wsug_html_chunked/ChConfigurationPluginFolders.html
 
 The DLL has been tested with Wireshark 3.0.2 64bits on Windows 10. For a different version, you may need to compile the dissector yourself (see "How to compile" section below).
 
