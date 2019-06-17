@@ -33,7 +33,7 @@ key b, the key that will initialize the RC4 internal state that:
 * the client will use to encrypt the packets it sends.
 * the server will use to decrypt the packets it receives. 
 
-Even though the server and the client will both have both keys, by convention in this project, we will call key a "the server key" (because the server uses it encrypt) and key b "the client key" (because the client uses it to encrypt).
+Even though the server and the client will both have both keys, by convention in this project, we will call key a "the server key" (because the server uses it encrypt and therefore we will use that key to decrypt the packets coming from the server) and key b "the client key" (because the client uses it to encrypt and therefore we will use that key to decrypt the packets coming from the clients).
 
 Now the question is: How do we get these 2 keys? Without going much into the details, the 2 RC4 keys are the result of the key exchange mechanism that WoW uses (SPR6) when the client authenticate itself with the server. In order to obtain these 2 keys, I wrote a LUA script (located in the folder "cheat engine script") that runs on [Cheat Engine](https://github.com/cheat-engine/cheat-engine). This script hooks into the client and print into a file the 2 session keys. These 2 session keys can then be given to Wireshark to enable the decryption of the WoW packets. 
 
