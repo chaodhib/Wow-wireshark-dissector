@@ -28,27 +28,20 @@ static gcry_cipher_hd_t rc4_handle_client;
 static wmem_map_t *decryptedHeadersMap = NULL;
 static GHashTable *opcodeMap = NULL;
 
-static int fullPacketCounter = 0;
-
-static int server_packet_counter = 0;
-static int client_packet_counter = 0;
-
 static gboolean serverDecryptionReady = FALSE;
 static gboolean clientDecryptionReady = FALSE;
 
 struct WowwContext {
-    gint expectedSize;
+    guint expectedSize;
     guint32 lastNum;
+    guint packet_counter;
 };
 
 struct WowwStruct {
+    guint frameNumber;
+    guint pduIndexInFrame;
     struct WowwContext* serverContext;
     struct WowwContext* clientContext;
-};
-
-enum PacketDirection {
-    ServerToClient,
-    ClientToServer
 };
 
 // from packet-aoe.c
@@ -128,7 +121,7 @@ load_opcode_file()
     char fileLine[256];
 
     if (!file) {
-        g_log(NULL, G_LOG_LEVEL_WARNING, "Could not find wow Opcodes.h file\n");
+        g_log(NULL, G_LOG_LEVEL_WARNING, "Could not find wow Opcodes.h file");
         return;
     }
 
@@ -141,7 +134,7 @@ load_opcode_file()
     GRegex *valueRegex = g_regex_new(value_regex, G_REGEX_RAW, (GRegexMatchFlags)0, NULL);
 
     if (!lineRegex || !nameRegex || !valueRegex) {
-        g_log(NULL, G_LOG_LEVEL_WARNING, "Failed to compile regex to parse wow opcodes\n");
+        g_log(NULL, G_LOG_LEVEL_WARNING, "Failed to compile regex to parse wow opcodes");
         exit(EXIT_FAILURE);
     }
 
@@ -175,7 +168,7 @@ load_opcode_file()
             continue;
         }
 
-        // add the pair (name, value) to the list
+        // add the pair (name, value) to the table
         g_hash_table_insert(opcodeMap, GUINT_TO_POINTER(opcodeValue), (void*)nameResult);
 
         g_free(lineResult);
@@ -192,8 +185,28 @@ initialize_protocol(void)
     clientDecryptionReady = prepare_decryption(FALSE);
     decryptedHeadersMap = wmem_map_new_autoreset(wmem_epan_scope(), wmem_file_scope(), ata_cmd_hash_matched, ata_cmd_equal_matched);
     load_opcode_file();
-    server_packet_counter = 0;
-    client_packet_counter = 0;
+}
+
+static struct WowwStruct*
+initialize_conversation_data(conversation_t* conv)
+{
+    struct WowwStruct* wowwStruct = malloc(sizeof(struct WowwStruct));
+    wowwStruct->frameNumber = 0;
+    wowwStruct->pduIndexInFrame = 0;
+
+    wowwStruct->clientContext = malloc(sizeof(struct WowwContext));
+    wowwStruct->clientContext->expectedSize = 0;
+    wowwStruct->clientContext->lastNum = 0;
+    wowwStruct->clientContext->packet_counter = 0;
+
+    wowwStruct->serverContext = malloc(sizeof(struct WowwContext));
+    wowwStruct->serverContext->expectedSize = 0;
+    wowwStruct->serverContext->lastNum = 0;
+    wowwStruct->serverContext->packet_counter = 0;
+
+    conversation_add_proto_data(conv, proto_woww, wowwStruct); //todo: malloc without free here!
+
+    return wowwStruct;
 }
 
 static guint8*
@@ -273,78 +286,100 @@ proto_register_woww(void)
     register_init_routine(initialize_protocol);
 }
 
+/*
+    Read and decrypt the header of the packet
+
+    - read the header: first N bytes (4-5 from server, 6 from client).
+    - then decrypt those N bytes (an exception is made for the first packet on each direction since these two are not encrypted.
+*/
 static guint8*
 get_decrypted_header(tvbuff_t *tvb, packet_info *pinfo _U_, int offset)
 {
     conversation_t* conv = find_conversation(pinfo->fd->num, &pinfo->src, &pinfo->dst, pinfo->ptype, pinfo->srcport, pinfo->destport, 0);
     struct WowwStruct* wowwStruct = (struct WowwStruct*) conversation_get_proto_data(conv, proto_woww);
-
-    int length = tvb_captured_length(tvb); length; // todo: remove this line. only used for debugging.
+    struct WowwContext* context = WOWWW_SERVER_TO_CLIENT ? wowwStruct->serverContext : wowwStruct->clientContext;
 
     guint8* decryptedHeader;
-    if (!pinfo->fd->visited) {
-        // packet from server to client
-        if (WOWWW_SERVER_TO_CLIENT) {
-            server_packet_counter++;
+    context->packet_counter++;
 
-            // read the first N bytes (4-5 from server, 6 from client)
-            guint8 header[5]; // the header's lenght can be 4 or 5 bytes. this can only be determined after decryption, by looking at the first byte.
-            for (int i = 0; i < 4; i++) {
-                header[i] = tvb_get_guint8(tvb, offset + i);
-            }
+    if (WOWWW_SERVER_TO_CLIENT) { // packet from server to client
 
-            // the first packet on each direction is uncrypted
-            if (server_packet_counter == 1) {
-                decryptedHeader = wmem_alloc_array(wmem_file_scope(), guint8, 4);
-                memcpy(decryptedHeader, header, 4);
-            }
-            else {
-                // decrypt first byte
-                guint8* decryptedFirstByte = decrypt_rc4(header, 1, TRUE);
-                guint8* remainingHeader;
-                decryptedHeader = wmem_alloc_array(wmem_file_scope(), guint8, 5);
-                decryptedHeader[0] = *decryptedFirstByte;
-                if (*decryptedFirstByte & 0x80) {
-                    header[4] = tvb_get_guint8(tvb, offset + 4); // todo: this is so ugly. come on man. start cleaning up this code.
-                    remainingHeader = decrypt_rc4(header +1 , 4, TRUE);
-                    memcpy(decryptedHeader + 1, remainingHeader, 4);
-                }
-                else {
-                    remainingHeader = decrypt_rc4(header + 1, 3, TRUE);
-                    memcpy(decryptedHeader + 1, remainingHeader, 3);
-                }
-            }
+        // the header fits into 4 or 5 bytes. the exact length can only be determined after decryption, by looking at the first bit. if that bit is set, then the header length is 5 bytes. Otherwise, it's 4 bytes.
+        guint8 header[5];
+        for (int i = 0; i < 4; i++) {
+            header[i] = tvb_get_guint8(tvb, offset + i);
+        }
 
-            wmem_map_insert(decryptedHeadersMap, GUINT_TO_POINTER(pinfo->num), (void*)decryptedHeader);
-            wowwStruct->serverContext->lastNum = pinfo->num;
+        // the first packet on each direction is uncrypted
+        if (context->packet_counter == 1) {
+            decryptedHeader = wmem_alloc_array(wmem_file_scope(), guint8, 4);
+            memcpy(decryptedHeader, header, 4);
         }
         else {
-            client_packet_counter++;
-
-            // read the first N bytes (4-5 from server, 6 from client)
-            guint8 header[6];
-            for (int i = 0; i < 6; i++) {
-                header[i] = tvb_get_guint8(tvb, offset + i);
-            }
-
-            // the first packet on each direction is uncrypted
-            if (client_packet_counter == 1) {
-                decryptedHeader = wmem_alloc_array(wmem_file_scope(), guint8, 6);
-                memcpy(decryptedHeader, header, 6);
+            // decrypt first byte
+            guint8* decryptedFirstByte = decrypt_rc4(header, 1, TRUE);
+            guint8* remainingHeader;
+            decryptedHeader = wmem_alloc_array(wmem_file_scope(), guint8, 5);
+            decryptedHeader[0] = *decryptedFirstByte;
+            if (*decryptedFirstByte & 0x80) {
+                header[4] = tvb_get_guint8(tvb, offset + 4); // todo: this is so ugly. come on man. start cleaning up this code.
+                remainingHeader = decrypt_rc4(header +1 , 4, TRUE);
+                memcpy(decryptedHeader + 1, remainingHeader, 4);
             }
             else {
-                decryptedHeader = decrypt_rc4(header, 6, FALSE);
+                remainingHeader = decrypt_rc4(header + 1, 3, TRUE);
+                memcpy(decryptedHeader + 1, remainingHeader, 3);
             }
-
-            wmem_map_insert(decryptedHeadersMap, GUINT_TO_POINTER(pinfo->num), (void*)decryptedHeader);
-            wowwStruct->serverContext->lastNum = pinfo->num;
         }
     }
-    else if(pinfo->fd->visited){
-        decryptedHeader = (guint8 *)wmem_map_lookup(decryptedHeadersMap, GUINT_TO_POINTER(pinfo->num));
+    else { // packet from client to server
+
+        // the header fits into 6 bytes
+        guint8 header[6];
+        for (int i = 0; i < 6; i++) {
+            header[i] = tvb_get_guint8(tvb, offset + i);
+        }
+
+        // the first packet on each direction is uncrypted
+        if (context->packet_counter == 1) {
+            decryptedHeader = wmem_alloc_array(wmem_file_scope(), guint8, 6);
+            memcpy(decryptedHeader, header, 6);
+        }
+        else {
+            decryptedHeader = decrypt_rc4(header, 6, FALSE);
+        }
     }
 
     return decryptedHeader;
+}
+
+static void
+insert_element_in_map_list(guint32 frame_number, guint8* decryptedHeader)
+{
+    GList* list = (GList*)wmem_map_lookup(decryptedHeadersMap, GUINT_TO_POINTER(frame_number));
+    list = g_list_append(list, decryptedHeader);
+    wmem_map_insert(decryptedHeadersMap, GUINT_TO_POINTER(frame_number), list);
+}
+
+static guint8*
+get_nth_element_in_map_list(guint32 frame_number, guint n)
+{
+    GList* list = (GList*)wmem_map_lookup(decryptedHeadersMap, GUINT_TO_POINTER(frame_number));
+    return (guint8 *) g_list_nth_data(list, n);
+}
+
+static guint8*
+get_last_element_in_map_list(guint32 frame_number)
+{
+    GList* list = (GList*)wmem_map_lookup(decryptedHeadersMap, GUINT_TO_POINTER(frame_number));
+    return (guint8*) g_list_last(list)->data;
+}
+
+static guint
+get_length_of_map_list(guint32 frame_number)
+{
+    GList* list = (GList*)wmem_map_lookup(decryptedHeadersMap, GUINT_TO_POINTER(frame_number));
+    return g_list_length(list);
 }
 
 /* determine PDU length of protocol woww */
@@ -354,45 +389,49 @@ get_woww_message_len(packet_info *pinfo _U_, tvbuff_t *tvb, int offset, void *da
     conversation_t* conv = find_conversation(pinfo->fd->num, &pinfo->src, &pinfo->dst, pinfo->ptype, pinfo->srcport, pinfo->destport, 0);
     struct WowwStruct* wowwStruct = (struct WowwStruct*) conversation_get_proto_data(conv, proto_woww);
     if (wowwStruct == NULL) {
-        wowwStruct = malloc(sizeof(struct WowwStruct));
-
-        wowwStruct->clientContext = malloc(sizeof(struct WowwContext));
-        wowwStruct->clientContext->expectedSize = 0;
-        wowwStruct->clientContext->lastNum = 0;
-
-        wowwStruct->serverContext = malloc(sizeof(struct WowwContext));
-        wowwStruct->serverContext->expectedSize = 0;
-        wowwStruct->serverContext->lastNum = 0;
-        conversation_add_proto_data(conv, proto_woww, wowwStruct); //todo: malloc without free here!
+        wowwStruct = initialize_conversation_data(conv);
     }
 
     struct WowwContext* context = WOWWW_SERVER_TO_CLIENT ? wowwStruct->serverContext : wowwStruct->clientContext;
 
-    if (context->expectedSize) {
-        if (tvb_captured_length(tvb) == context->expectedSize) {
-            // we have enough data now to restruct the packet.
-            // dissect_woww_message will be called next
-            // we need to prepare the map lookup
+        
+    guint8* decryptedHeader;
+    if (!pinfo->fd->visited) {
 
-            context->expectedSize = 0;
-            guint8* decryptedHeader = (guint8 *)wmem_map_lookup(decryptedHeadersMap, GUINT_TO_POINTER(context->lastNum));
-            wmem_map_insert(decryptedHeadersMap, GUINT_TO_POINTER(pinfo->num), (void*)decryptedHeader);
+        if (context->expectedSize) {
+            if ((gint)tvb_captured_length(tvb) >= context->expectedSize) {
+                // we have enough data now to restruct at least one PDU now.
+                // dissect_woww_message will be called next
+                // we need to prepare the map lookup
 
-            return tvb_captured_length(tvb);
+                guint retValue = context->expectedSize;
+                context->expectedSize = 0;
+                guint8* decryptedHeader = get_last_element_in_map_list(context->lastNum);
+                insert_element_in_map_list(pinfo->num, decryptedHeader);
+
+                return retValue;
+            }
+            else {
+                g_assert_not_reached();
+            }
         }
-        else if ((gint) tvb_captured_length(tvb) > context->expectedSize) {
-            gint retValue = context->expectedSize; // todo: need refactoring
-            context->expectedSize = 0;
-            guint8* decryptedHeader = (guint8 *)wmem_map_lookup(decryptedHeadersMap, GUINT_TO_POINTER(context->lastNum));
-            wmem_map_insert(decryptedHeadersMap, GUINT_TO_POINTER(pinfo->num), (void*)decryptedHeader);
-            return retValue;
+
+        decryptedHeader = get_decrypted_header(tvb, pinfo, offset);
+        // decryptedHeadersMap maps between pinfo->num and a queue that contains all decrypted headers found in that frame. multiple PDU can be contained in a single TCP segment or re-assembled TCP segments.
+        insert_element_in_map_list(pinfo->num, decryptedHeader);
+        context->lastNum = pinfo->num;
+    }
+    else {
+        if (wowwStruct->frameNumber != pinfo->num) {
+            wowwStruct->frameNumber = pinfo->num;
+            wowwStruct->pduIndexInFrame = 0;
         }
         else {
-            return tvb_captured_length(tvb);
+            wowwStruct->pduIndexInFrame = (wowwStruct->pduIndexInFrame + 1) % get_length_of_map_list(pinfo->num);
         }
+
+        decryptedHeader = get_nth_element_in_map_list(pinfo->num, wowwStruct->pduIndexInFrame);
     }
-        
-    guint8* decryptedHeader = get_decrypted_header(tvb, pinfo, offset);
 
     guint pduSize; // = length of the size field + length of the opcode field + length of the payload
     if (WOWWW_SERVER_TO_CLIENT && decryptedHeader[0] & 0x80) { // this flag indicate that the size will be encoded in 3 bytes instead of just 2.
@@ -414,7 +453,9 @@ get_woww_message_len(packet_info *pinfo _U_, tvbuff_t *tvb, int offset, void *da
 static int
 dissect_woww_message(tvbuff_t *tvb, packet_info *pinfo _U_, proto_tree *tree _U_, void *data _U_)
 {
-    guint8* decryptedHeader = (guint8 *)wmem_map_lookup(decryptedHeadersMap, GUINT_TO_POINTER(pinfo->num));
+    conversation_t* conv = find_conversation(pinfo->fd->num, &pinfo->src, &pinfo->dst, pinfo->ptype, pinfo->srcport, pinfo->destport, 0);
+    struct WowwStruct* wowwStruct = (struct WowwStruct*) conversation_get_proto_data(conv, proto_woww);
+    guint8* decryptedHeader = decryptedHeader = pinfo->fd->visited ? get_nth_element_in_map_list(pinfo->num, wowwStruct->pduIndexInFrame) : get_last_element_in_map_list(pinfo->num);
 
     col_set_str(pinfo->cinfo, COL_PROTOCOL, "WOWW");
     col_clear(pinfo->cinfo, COL_INFO);
@@ -472,11 +513,11 @@ static int
 dissect_woww(tvbuff_t *tvb, packet_info *pinfo, proto_tree *tree _U_, void *data _U_)
 {
     if (WOWWW_SERVER_TO_CLIENT && serverDecryptionReady) {
-        tcp_dissect_pdus(tvb, pinfo, tree, TRUE, 3, get_woww_message_len, dissect_woww_message, data);
+        tcp_dissect_pdus(tvb, pinfo, tree, TRUE, 4, get_woww_message_len, dissect_woww_message, data);
         return tvb_captured_length(tvb);
     }
     else if(WOWWW_CLIENT_TO_SERVER && clientDecryptionReady) {
-        tcp_dissect_pdus(tvb, pinfo, tree, TRUE, 2, get_woww_message_len, dissect_woww_message, data);
+        tcp_dissect_pdus(tvb, pinfo, tree, TRUE, 6, get_woww_message_len, dissect_woww_message, data);
         return tvb_captured_length(tvb);
     }
 
